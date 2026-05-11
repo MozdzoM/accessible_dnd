@@ -7,6 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework.exceptions import ValidationError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from .models import UserSettings
 from .serializers import (
@@ -17,6 +19,13 @@ from .serializers import (
     UserSerializer,
     UserSettingsSerializer,
 )
+
+
+def api_error(code: str, response_status: int, **params) -> Response:
+    return Response(
+        {"detail": {"code": code, **params}},
+        status=response_status,
+    )
 
 def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     max_age = int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds())
@@ -57,7 +66,9 @@ class LoginView(APIView):
             password=serializer.validated_data["password"],
         )
         if user is None:
-            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+            return api_error("invalid_credentials", status.HTTP_401_UNAUTHORIZED)
+        if not user.is_active:
+            return api_error("account_inactive", status.HTTP_403_FORBIDDEN)
 
         refresh = RefreshToken.for_user(user)
         response = Response(
@@ -73,13 +84,12 @@ class RefreshView(APIView):
     def post(self, request: Request) -> Response:
         refresh_token = request.COOKIES.get(settings.JWT_REFRESH_COOKIE)
         if not refresh_token:
-            return Response(
-                {"detail": "Refresh token cookie is missing."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
+            return api_error("missing_refresh_token", status.HTTP_401_UNAUTHORIZED)
         serializer = TokenRefreshSerializer(data={"refresh": refresh_token})
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except (InvalidToken, TokenError, ValidationError):
+            return api_error("invalid_refresh_token", status.HTTP_401_UNAUTHORIZED)
         response = Response({"access": serializer.validated_data["access"]}, status=status.HTTP_200_OK)
         if "refresh" in serializer.validated_data:
             set_refresh_cookie(response, serializer.validated_data["refresh"])
@@ -126,4 +136,4 @@ class SettingsView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
-        
+    
